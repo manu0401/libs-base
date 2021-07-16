@@ -3500,12 +3500,28 @@ AC_ARG_ENABLE(icu,
   [  --disable-icu			Disable International Components for Unicode],,
   enable_icu=yes)
 
-if test "$enable_icu" = "yes"; then
-  PKG_CHECK_MODULES([ICU], [icu-i18n > 49.0])
-  AC_CHECK_HEADERS(unicode/uloc.h unicode/ulocdata.h unicode/ucol.h unicode/ucurr.h unicode/uregex.h unicode/ucal.h unicode/unorm2.h unicode/unum.h unicode/udat.h unicode/udatpg.h unicode/ustring.h unicode/usearch.h unicode/ucnv.h)
+AS_IF([test "x$enable_icu" = "xyes"], [
+  PKG_CHECK_MODULES([ICU], [icu-i18n > 49.0], [
+    AC_CHECK_HEADERS([unicode/uloc.h unicode/ulocdata.h unicode/ucol.h unicode/ucurr.h unicode/uregex.h unicode/ucal.h unicode/unorm2.h unicode/unum.h unicode/udat.h unicode/udatpg.h unicode/ustring.h unicode/usearch.h unicode/ucnv.h unicode/utext.h],
+      HAVE_ICU=1)], [HAVE_ICU=0])
+  if test $HAVE_ICU = 0; then
+    case "$target_os" in
+      windows)
+        # With MSVC we can use ICU bundled with Windows 10
+        AC_CHECK_HEADERS([icu.h],
+          AC_CHECK_LIB(icu, udat_open, HAVE_ICU=1))
+        if test $HAVE_ICU = 1; then
+          ICU_LIBS=-licu
+          AC_MSG_NOTICE([Using ICU DLL from Windows 10 (requires version 1903)])
+        fi
+        ;;
+    esac
+  fi
+  if test $HAVE_ICU = 0; then
+    AC_MSG_ERROR([No useable ICU installation found])
+  fi
   LIBS="$LIBS $ICU_LIBS"
-  HAVE_ICU=1
-fi
+])
 AC_SUBST(HAVE_ICU)
 
 #--------------------------------------------------------------------
