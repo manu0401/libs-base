@@ -409,75 +409,15 @@ union local_storage {
 /* Load tz data from the file named NAME into *SP.  Read extended
    format if DOEXTEND.  Use *LSP for temporary storage.  Return 0 on
    success, an errno value on failure.  */
+
 static int
-tzloadbody(char const *name, struct state *sp, bool doextend,
-  union local_storage *lsp)
+tzloadbody1(char const *name, struct state *sp, bool doextend,
+  union local_storage *lsp, ssize_t nread)
 {
 	int			i;
-	int			fid;
 	int			stored;
-	ssize_t			nread;
-	bool			doaccess;
 	union input_buffer	*up = &lsp->u.u;
 	size_t			tzheadsize = sizeof(struct tzhead);
-
-	sp->goback = sp->goahead = false;
-
-	if (! name) {
-		name = TZDEFAULT;
-		if (! name)
-			return EINVAL;
-	}
-
-	if (name[0] == ':')
-		++name;
-#ifdef SUPPRESS_TZDIR
-	/* Do not prepend TZDIR.  This is intended for specialized
-	   applications only, due to its security implications.  */
-	doaccess = true;
-#else
-	doaccess = name[0] == '/';
-#endif
-	if (!doaccess) {
-		char const *dot;
-		size_t namelen = strlen(name);
-		if (sizeof lsp->fullname - sizeof tzdirslash <= namelen)
-			return ENAMETOOLONG;
-
-		/* Create a string "TZDIR/NAME".  Using sprintf here
-		   would pull in stdio (and would fail if the
-		   resulting string length exceeded INT_MAX!).  */
-		memcpy(lsp->fullname, tzdirslash, sizeof tzdirslash);
-		strcpy(lsp->fullname + sizeof tzdirslash, name);
-
-		/* Set doaccess if NAME contains a ".." file name
-		   component, as such a name could read a file outside
-		   the TZDIR virtual subtree.  */
-		for (dot = name; (dot = strchr(dot, '.')) != NULL; dot++)
-		  if ((dot == name || dot[-1] == '/') && dot[1] == '.'
-		      && (dot[2] == '/' || !dot[2])) {
-		    doaccess = true;
-		    break;
-		  }
-
-		name = lsp->fullname;
-	}
-	if (doaccess && access(name, R_OK) != 0)
-		return errno;
-
-	fid = open(name, OPEN_MODE);
-	if (fid < 0)
-		return errno;
-	nread = read(fid, up->buf, sizeof up->buf);
-	if (nread < (ssize_t)tzheadsize) {
-		int err = nread < 0 ? errno : EINVAL;
-		close(fid);
-		return err;
-	}
-	if (close(fid) < 0)
-		return errno;
-
-	sp->data = [NSData dataWithBytes: up->buf length: nread];
 
 	for (stored = 4; stored <= 8; stored *= 2) {
 		int_fast32_t ttisstdcnt = detzcode(up->tzhead.tzh_ttisstdcnt);
@@ -766,6 +706,73 @@ tzloadbody(char const *name, struct state *sp, bool doextend,
 	sp->defaulttype = i;
 
 	return 0;
+}
+
+static int
+tzloadbody(char const *name, struct state *sp, bool doextend,
+  union local_storage *lsp)
+{
+	int			fid;
+	ssize_t			nread;
+	bool			doaccess;
+	union input_buffer	*up = &lsp->u.u;
+	size_t			tzheadsize = sizeof(struct tzhead);
+
+	sp->goback = sp->goahead = false;
+
+	if (! name) {
+		name = TZDEFAULT;
+		if (! name)
+			return EINVAL;
+	}
+
+	if (name[0] == ':')
+		++name;
+
+	doaccess = name[0] == '/';
+
+	if (!doaccess) {
+		char const *dot;
+		size_t namelen = strlen(name);
+		if (sizeof lsp->fullname - sizeof tzdirslash <= namelen)
+			return ENAMETOOLONG;
+
+		/* Create a string "TZDIR/NAME".  Using sprintf here
+		   would pull in stdio (and would fail if the
+		   resulting string length exceeded INT_MAX!).  */
+		memcpy(lsp->fullname, tzdirslash, sizeof tzdirslash);
+		strcpy(lsp->fullname + sizeof tzdirslash, name);
+
+		/* Set doaccess if NAME contains a ".." file name
+		   component, as such a name could read a file outside
+		   the TZDIR virtual subtree.  */
+		for (dot = name; (dot = strchr(dot, '.')) != NULL; dot++)
+		  if ((dot == name || dot[-1] == '/') && dot[1] == '.'
+		      && (dot[2] == '/' || !dot[2])) {
+		    doaccess = true;
+		    break;
+		  }
+
+		name = lsp->fullname;
+	}
+	if (doaccess && access(name, R_OK) != 0)
+		return errno;
+
+	fid = open(name, OPEN_MODE);
+	if (fid < 0)
+		return errno;
+	nread = read(fid, up->buf, sizeof up->buf);
+	if (nread < (ssize_t)tzheadsize) {
+		int err = nread < 0 ? errno : EINVAL;
+		close(fid);
+		return err;
+	}
+	if (close(fid) < 0)
+		return errno;
+
+	sp->data = [NSData dataWithBytes: up->buf length: nread];
+
+	return tzloadbody1(name, sp, doextend, lsp, nread);
 }
 
 /* Load tz data from the file named NAME into *SP.  Read extended
@@ -4425,204 +4432,31 @@ getTypeInfo(NSTimeInterval since, GSTimeZone *zone)
 - (id) initWithName: (NSString*)name data: (NSData*)data
 {
   static NSString	*fileException = @"GSTimeZoneFileException";
-
-  timeZoneName = [name copy];
-  timeZoneData = [data copy];
+  union local_storage	*lsp = malloc(sizeof *lsp);
+  union input_buffer    *up = &lsp->u.u;
+  size_t		nread;
   NS_DURING
     {
-      const void	*bytes = [timeZoneData bytes];
-      unsigned		length = [timeZoneData length];
-      void		*buf;
-      unsigned		pos = 0;
-      unsigned		i, charcnt;
-      unsigned char	*abbr;
-      struct tzhead	*header;
-      unsigned		version = 1;
-
-      if (length < sizeof(struct tzhead))
-	{
+	if (!lsp)
 	  [NSException raise: fileException
-		      format: @"File is too small"];
-	}
-      header = (struct tzhead *)(bytes + pos);
-      pos += sizeof(struct tzhead);
+		      format: @"malloc failed"];
 
-      if (memcmp(header->tzh_magic, TZ_MAGIC, strlen(TZ_MAGIC)) != 0)
-	{
+	nread = [data length];
+  	up = &lsp->u.u;
+        if (nread > sizeof(up->buf))
 	  [NSException raise: fileException
-		      format: @"TZ_MAGIC is incorrect"];
-	}
+		      format: @"data too large"];
 
-      /* For version 2+, skip to second header */
-      if (header->tzh_version[0] != 0)
-        {
-	  /* tzh_version[0] is an ascii digit for versions above 1.
-	   */
-	  version = header->tzh_version[0] - '0';
+	[data getBytes: up->buf]; 
 
-	  /* pos indexes after the first header, increment it to index after
-	   * the data associated with that header too.
-	   */
-          pos += GSSwapBigI32ToHost(*(int32_t*)(void*)header->tzh_timecnt) * 5
-	    + GSSwapBigI32ToHost(*(int32_t*)(void*)header->tzh_typecnt) * 6
-	    + GSSwapBigI32ToHost(*(int32_t*)(void*)header->tzh_charcnt)
-	    + GSSwapBigI32ToHost(*(int32_t*)(void*)header->tzh_leapcnt) * 8
-	    + GSSwapBigI32ToHost(*(int32_t*)(void*)header->tzh_ttisstdcnt)
-	    + GSSwapBigI32ToHost(*(int32_t*)(void*)header->tzh_ttisutcnt);
-
-	  /* Now we get a pointer to the version 2+ header and set pos as an
-	   * index to the data after that.
-	   */
-	  header = (struct tzhead *)(bytes + pos);
-          pos += sizeof(struct tzhead);
-
-          if (memcmp(header->tzh_magic, TZ_MAGIC, strlen(TZ_MAGIC)) != 0)
-	    {
-	      [NSException raise: fileException
-		      format: @"TZ_MAGIC is incorrect (v2+ header)"];
-	    }
-	}
-
-      n_trans = GSSwapBigI32ToHost(*(int32_t*)(void*)header->tzh_timecnt);
-      n_types = GSSwapBigI32ToHost(*(int32_t*)(void*)header->tzh_typecnt);
-      charcnt = GSSwapBigI32ToHost(*(int32_t*)(void*)header->tzh_charcnt);
-
-      i = pos;
-      if (1 == version)
-	{
-	  /* v1 with 32-bit transitions */
-	  i += sizeof(int32_t) * n_trans;
-	}
-      else
-	{
-	  /* v2+ with 64-bit transitions */
-	  i += sizeof(int64_t) * n_trans;
-	}
-      if (i > length)
-	{
+	if (tzloadbody1([name cString], &sp, true, lsp, nread) != 0)
 	  [NSException raise: fileException
-		      format: @"Transitions list is truncated"];
-	}
-      i += n_trans;
-      if (i > length)
-	{
-	  [NSException raise: fileException
-		      format: @"Transition indexes are truncated"];
-	}
-      i += sizeof(struct ttinfo)*n_types;
-      if (i > length)
-	{
-	  [NSException raise: fileException
-		      format: @"Types list is truncated"];
-	}
-      if (i + charcnt > length)
-	{
-	  [NSException raise: fileException
-		      format: @"Abbreviations list is truncated"];
-	}
-
-      /*
-       * Now calculate size we need to store the information
-       * for efficient access ... not the same saze as the data
-       * we received (we always use 64bit transitions internally).
-       */
-      i = n_trans * (sizeof(int64_t)+1) + n_types * sizeof(TypeInfo);
-      buf = NSZoneMalloc(NSDefaultMallocZone(), i);
-      types = (TypeInfo*)buf;
-      buf += (n_types * sizeof(TypeInfo));
-      trans = (int64_t*)buf;
-      buf += (n_trans * sizeof(int64_t)); 
-      idxs = (unsigned char*)buf;
-
-      /* Read in transitions. */
-      if (1 == version)
-	{
-	  /* v1 with 32-bit transitions */
-	  for (i = 0; i < n_trans; i++)
-	    {
-	      trans[i] = GSSwapBigI32ToHost(*(int32_t*)(bytes + pos));
-	      pos += sizeof(int32_t);
-	    }
-	}
-      else
-	{
-	  /* v2+ with 64-bit transitions */
-	  for (i = 0; i < n_trans; i++)
-	    {
-	      trans[i] = GSSwapBigI64ToHost(*(int64_t*)(bytes + pos));
-	      pos += sizeof(int64_t);
-	    }
-	}
-      for (i = 0; i < n_trans; i++)
-	{
-	  idxs[i] = *(unsigned char*)(bytes + pos);
-	  pos++;
-	}
-      for (i = 0; i < n_types; i++)
-	{
-	  struct ttinfo	*ptr = (struct ttinfo*)(bytes + pos);
-          uint32_t      off;
-
-	  types[i].isdst = (ptr->isdst != 0 ? YES : NO);
-	  types[i].abbr_idx = ptr->abbr_idx;
-          memcpy(&off, ptr->offset, 4);
-	  types[i].offset = GSSwapBigI32ToHost(off);
-	  pos += sizeof(struct ttinfo);
-	}
-      abbr = (unsigned char*)(bytes + pos);
-      {
-	id		abbrevs[charcnt];
-	unsigned	count = 0;
-	unsigned	used = 0;
-
-	memset(abbrevs, '\0', sizeof(id)*charcnt);
-	for (i = 0; i < n_types; i++)
-	  {
-	    int	loc = types[i].abbr_idx;
-
-	    if (abbrevs[loc] == nil)
-	      {
-		abbrevs[loc]
-		  = [[NSString alloc] initWithUTF8String: (char*)abbr + loc];
-		count++;
-	      }
-	    types[i].abbreviation = abbrevs[loc];
-	  }
-	/*
-	 * Now we have created all the abbreviations, we put them in an
-	 * array for easy access later and easy deallocation if/when
-	 * the receiver is deallocated.
-	 */
-	i = charcnt;
-	while (i-- > count)
-	  {
-	    if (abbrevs[i] != nil)
-	      {
-		while (abbrevs[used] != nil)
-		  {
-		    used++;
-		  }
-		abbrevs[used] = abbrevs[i];
-		abbrevs[i] = nil;
-		if (++used >= count)
-		  {
-		    break;
-		  }
-	      }
-	  }
-	abbreviations = [[NSArray alloc] initWithObjects: abbrevs count: count];
-	while (count-- > 0)
-	  {
-	    RELEASE(abbrevs[count]);
-	  }
-      }
-
-      pthread_mutex_lock(&zone_mutex);
-      [zoneDictionary setObject: self forKey: timeZoneName];
-      pthread_mutex_unlock(&zone_mutex);
+		      format: @"cannot parse data"];
+	free(lsp);
     }
   NS_HANDLER
     {
+      free(lsp);
       DESTROY(self);
       NSLog(@"Unable to obtain time zone `%@'... %@", name, localException);
       if ([localException name] != fileException)
