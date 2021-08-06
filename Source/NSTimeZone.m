@@ -403,7 +403,6 @@ static NSString *_time_zone_path(NSString *subpath, NSString *type)
 
   if (zone == nil)
     {
-        int		err;
 	const char	*zoneName = [name UTF8String];
         
 #if	defined(_WIN32)
@@ -415,16 +414,63 @@ static NSString *_time_zone_path(NSString *subpath, NSString *type)
 	struct state *sp = &newZone->sp;
 	int i;
 
-	err = tzload(zoneName, sp, true);
-	if (err != 0 && zoneName && zoneName[0] != ':' &&
-	    tzparse(zoneName, sp, false))
-		err = 0;
-	if (err == 0)
-		scrub_abbrs(sp);
+	if (data == nil)
+	  {
+	    tzload(zoneName, sp, true);
+	  }
 	else
-                return nil;
+	  {
+  	    static NSString	*fileException = @"GSTimeZoneFileException";
+  	    union local_storage	*lsp = NULL;
+  	    union input_buffer  *up;
+  	    size_t		nread;
 
-	
+	    NS_DURING
+	      {
+		lsp = malloc(sizeof *lsp);
+		if (!lsp)
+		  [NSException raise: fileException
+			      format: @"malloc failed"];
+
+		up = &lsp->u.u;
+		nread = [data length];
+		if (nread > sizeof(up->buf))
+		  [NSException raise: fileException
+			      format: @"data too large"];
+
+		[data getBytes: up->buf]; 
+
+		if (tzloadbody1([name cString], sp, true, lsp, nread) != 0)
+		  [NSException raise: fileException
+			      format: @"cannot parse data"];
+		free(lsp);
+		lsp = NULL;
+
+		if (!name || [name cString][0] != ':')
+		  [NSException raise: fileException
+			      format: @"bad zone name"];
+
+		if (tzparse(zoneName, sp, false) != 0)
+		  [NSException raise: fileException
+			      format: @"failed to parse zone data"];
+
+		scrub_abbrs(sp);
+	      }
+  	    NS_HANDLER
+	      {
+		if (lsp)
+      		  free(lsp);
+      		  DESTROY(self);
+      		  NSLog(@"Unable to obtain time zone `%@'... %@",
+		    name, localException);
+		  if ([localException name] != fileException)
+		    {
+	  	      [localException raise];
+		    }
+    	      }
+  	    NS_ENDHANDLER
+	  }
+
 	newZone->timeZoneName = [NSString stringWithCString: zoneName];
 
         id abbrs[sp->typecnt];
@@ -2906,45 +2952,6 @@ getTypeInfo(NSTimeInterval since, GSTimeZone *zone)
       NSZoneFree(NSDefaultMallocZone(), types);
     }
   [super dealloc];
-}
-
-- (id) initWithName: (NSString*)name data: (NSData*)data
-{
-  static NSString	*fileException = @"GSTimeZoneFileException";
-  union local_storage	*lsp = malloc(sizeof *lsp);
-  union input_buffer    *up = &lsp->u.u;
-  size_t		nread;
-  NS_DURING
-    {
-	if (!lsp)
-	  [NSException raise: fileException
-		      format: @"malloc failed"];
-
-	nread = [data length];
-  	up = &lsp->u.u;
-        if (nread > sizeof(up->buf))
-	  [NSException raise: fileException
-		      format: @"data too large"];
-
-	[data getBytes: up->buf]; 
-
-	if (tzloadbody1([name cString], &sp, true, lsp, nread) != 0)
-	  [NSException raise: fileException
-		      format: @"cannot parse data"];
-	free(lsp);
-    }
-  NS_HANDLER
-    {
-      free(lsp);
-      DESTROY(self);
-      NSLog(@"Unable to obtain time zone `%@'... %@", name, localException);
-      if ([localException name] != fileException)
-	{
-	  [localException raise];
-	}
-    }
-  NS_ENDHANDLER
-  return self;
 }
 
 - (BOOL) isDaylightSavingTimeForDate: (NSDate*)aDate
