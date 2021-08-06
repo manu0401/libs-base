@@ -7,6 +7,18 @@
 
 /*	$NetBSD: private.h,v 1.56 2020/05/25 14:52:48 christos Exp $	*/
 
+#ifndef __UNCONST
+#define __UNCONST(a)   ((void *)(unsigned long)(const void *)(a))
+#endif
+
+#ifndef _DIAGASSERT
+#define _DIAGASSERT(e)
+#endif
+
+#ifndef TZDIR
+#define TZDIR "/usr/share/zoneinfo"
+#endif
+
 /* NetBSD defaults */
 #define TM_GMTOFF	tm_gmtoff
 #define TM_ZONE		tm_zone
@@ -558,34 +570,6 @@ extern int daylight;
 extern long altzone;
 #endif
 
-/*
-** The STD_INSPIRED functions are similar, but most also need
-** declarations if time_tz is defined.
-*/
-
-#ifdef STD_INSPIRED
-# if TZ_TIME_T || !defined tzsetwall
-void tzsetwall(void);
-# endif
-# if TZ_TIME_T || !defined offtime
-struct tm *offtime(time_t const *, long);
-# endif
-# if TZ_TIME_T || !defined timegm
-time_t timegm(struct tm *);
-# endif
-# if TZ_TIME_T || !defined timelocal
-time_t timelocal(struct tm *);
-# endif
-# if TZ_TIME_T || !defined timeoff
-time_t timeoff(struct tm *, long);
-# endif
-# if TZ_TIME_T || !defined time2posix
-time_t time2posix(time_t);
-# endif
-# if TZ_TIME_T || !defined posix2time
-time_t posix2time(time_t);
-# endif
-#endif
 
 /* Infer TM_ZONE on systems where this information is known, but suppress
    guessing if NO_TM_ZONE is defined.  Similarly for TM_GMTOFF.  */
@@ -598,33 +582,6 @@ time_t posix2time(time_t);
 # if !defined TM_ZONE && !defined NO_TM_ZONE
 #  define TM_ZONE tm_zone
 # endif
-#endif
-
-/*
-** Define functions that are ABI compatible with NetBSD but have
-** better prototypes.  NetBSD 6.1.4 defines a pointer type timezone_t
-** and labors under the misconception that 'const timezone_t' is a
-** pointer to a constant.  This use of 'const' is ineffective, so it
-** is not done here.  What we call 'struct state' NetBSD calls
-** 'struct __state', but this is a private name so it doesn't matter.
-*/
-#ifndef __NetBSD__
-#if NETBSD_INSPIRED
-typedef struct state *timezone_t;
-struct tm *localtime_rz(timezone_t restrict, time_t const *restrict,
-			struct tm *restrict);
-time_t mktime_z(timezone_t restrict, struct tm *restrict);
-timezone_t tzalloc(char const *);
-void tzfree(timezone_t);
-# ifdef STD_INSPIRED
-#  if TZ_TIME_T || !defined posix2time_z
-time_t posix2time_z(timezone_t __restrict, time_t) ATTRIBUTE_PURE;
-#  endif
-#  if TZ_TIME_T || !defined time2posix_z
-time_t time2posix_z(timezone_t __restrict, time_t) ATTRIBUTE_PURE;
-#  endif
-# endif
-#endif
 #endif
 
 /*
@@ -711,7 +668,9 @@ time_t time2posix_z(timezone_t __restrict, time_t) ATTRIBUTE_PURE;
 #define DAYSPERNYEAR	365
 #define DAYSPERLYEAR	366
 #define SECSPERHOUR	(SECSPERMIN * MINSPERHOUR)
+#ifndef SECSPERDAY
 #define SECSPERDAY	((int_fast32_t) SECSPERHOUR * HOURSPERDAY)
+#endif
 #define MONSPERYEAR	12
 
 #define TM_SUNDAY	0
@@ -2280,4 +2239,3 @@ leapcorr(struct state const *sp, time_t t)
 	}
 	return 0;
 }
-
